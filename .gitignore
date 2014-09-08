@@ -1,0 +1,6 @@
+*.sublime-project
+*.sublime-workspace
+*.elf
+*.hex
+.editorconfig
+proto_arduino/
