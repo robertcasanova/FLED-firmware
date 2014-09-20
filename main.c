@@ -29,24 +29,6 @@ Takes in a character at a time and sends it right back out,
 
 
 
-
-ISR(INT0_vect) {
-    uint16_t timer = 0;
-    while(bit_is_clear(PIND, PD2)) { // button hold down
-        timer++;
-        _delay_ms(1);
-    }
-    if(timer > BTN_DEBOUCE) { // software debouncing button
-        if(timer < 500UL) {//unsigned long
-            //single click
-            //printStringFromPROGMEM(serial_msg_1); // doesn't work
-        } else {
-            //button hold
-            //printStringFromPROGMEM(serial_msg_2);
-        }
-    }
-}
-
 //all this part needs refactoring
 
 const char serial_msg_1[] PROGMEM = "single click\r\n";
@@ -54,6 +36,7 @@ const char serial_msg_2[] PROGMEM = "hold down\r\n";
 const char serial_msg_3[] PROGMEM = "Read from EEPROM";
 const char serial_msg_4[] PROGMEM = "Write to EEPROM";
 const char serial_msg_5[] PROGMEM = "CMD";
+const char serial_msg_6[] PROGMEM = "OK";
 const char serial_br[] PROGMEM = "\r\n";
 
 struct SerialCommand *getSerialPack(void); // metti in header
@@ -64,35 +47,10 @@ struct SerialCommand{
     uint8_t *param;
 };
 
-
-ISR(USART_RX_vect) {
-	cli();
-	struct SerialCommand *command = getSerialPack();
-
-	switch(command -> cmd) {
-		case READ_FROM_EEPROM:
-			printStringFromPROGMEM(serial_br);
-			printStringFromPROGMEM(serial_msg_3);
-			printStringFromPROGMEM(serial_br);
-			printString("Address:");
-			printHexByte(command -> param[0]);
-			break; 
-		case WRITE_TO_EEPROM:
-			printStringFromPROGMEM(serial_msg_4);
-			break;
-
-	}
-	// printHexByte((command -> cmd) >> 8);
- //    printHexByte(command -> cmd);
- //    printHexByte(command -> len);
-	sei();
-}
-
 struct SerialCommand *getSerialPack() { // format: 2bytes header, 1byte len, 2bytes command, 1..n bytes params
 
-    struct SerialCommand *sc= malloc(sizeof(struct SerialCommand));
-    
 
+	//@TODO add checksum
     //uint8_t checksum;
   
     if(receiveByte() != HEADER_BYTE_1) {
@@ -101,39 +59,131 @@ struct SerialCommand *getSerialPack() { // format: 2bytes header, 1byte len, 2by
     if(receiveByte() != HEADER_BYTE_2) {
       return;
     }
+
+    struct SerialCommand *sc= NULL;
+
+    sc = (struct SerialCommand *) malloc(sizeof(struct SerialCommand));
+    
+    if(!sc) {
+    	printString("NO MEM");
+    	exit(1);
+    }
+
     //init packet
     sc ->len = receiveByte();
     sc -> cmd = receiveByte() << 8;
     sc -> cmd |= receiveByte();
 
-    uint8_t len = sc -> len;
     
-    if(len > 2) { // parameters available
-        for(uint8_t i = 0; i<(len-2); i++) {
+    if(sc -> len > 2) { // parameters available
+    	*sc->param = NULL;
+    	sc->param = (uint8_t *) malloc((sc->len)-2);
+    	if(!sc->param) {
+    		printString("NO MEM");
+    		exit(1);
+    	}
+        for(uint8_t i = 0; i<(sc->len)-2; i++) {
            sc -> param[i] = receiveByte(); 
         }
     }
-    
-    //WAIT_FOR_SERIAL_DATA;
-    //checksum = Serial.read();
-    //if(checksum == (len+(cmd >> 8)+(cmd)+)) 
-    
-    // printHexByte(HEADER_BYTE_1);
-    // printHexByte(HEADER_BYTE_2);
-    // printHexByte(len);
-    // printHexByte((sc -> cmd) >> 8);
-    // printHexByte(sc -> cmd);
-    // if(len > 2) {
-    //   for(uint8_t i = 0; i<(len-2); i++) {
-    //     printHexByte(sc->param[i]);
-    //   }  
-    // }
 
-    return sc;
-    
-    
+    return sc;   
         
 }
+
+
+ISR(USART_RX_vect) {
+	cli();
+	struct SerialCommand *command = NULL;
+	command = getSerialPack();
+
+	uint8_t eeprom_address;
+	uint8_t len;
+
+	switch(command -> cmd) {
+		case READ_FROM_EEPROM:
+
+			eeprom_address = (command -> param[0]);
+			len = (command -> param[1]);
+
+			#ifdef DEBUG
+				printStringFromPROGMEM(serial_br);
+				printStringFromPROGMEM(serial_msg_3);
+				printStringFromPROGMEM(serial_br);
+				printString("Address:");
+				printHexByte(eeprom_address);
+				printStringFromPROGMEM(serial_br);
+				printString("Bytes:");
+				printHexByte(len);
+				printStringFromPROGMEM(serial_br);
+			#endif
+
+			for(uint8_t i = 0; i< len; i++) {
+				uint8_t read = EEPROM_readByte(eeprom_address);
+				#ifdef DEBUG
+					printBinaryByte(read);
+				#else
+					transmitByte(read);
+				#endif
+
+				EEPROM_readIntoLeds(eeprom_address);
+				eeprom_address += 1;
+			}
+			
+
+			break; 
+		case WRITE_TO_EEPROM:
+
+			#ifdef DEBUG
+				printStringFromPROGMEM(serial_br);
+				printStringFromPROGMEM(serial_msg_4);
+				printStringFromPROGMEM(serial_br);
+				printString("Address:");
+				printHexByte(eeprom_address);
+				printStringFromPROGMEM(serial_br);
+				printString("Data:");
+			#endif
+
+			eeprom_address = (command -> param[0]);
+
+			for(uint8_t i = 1; i <= (command->len)-3; i++ ) {
+				#ifdef DEBUG
+					printHexByte(command -> param[i]);
+				#endif	
+				EEPROM_writeByte(eeprom_address, command -> param[i]);
+				eeprom_address += 1;
+			}
+			printStringFromPROGMEM(serial_msg_6); // OK
+
+
+			break;
+
+	}
+	//free allocate memory here
+	free(command -> param);
+	free(command);
+
+	sei();
+}
+
+ISR(INT0_vect) {
+    uint16_t timer = 0;
+    while(bit_is_clear(PIND, PD2)) { // button hold down
+        timer++;
+        _delay_ms(1);
+    }
+    if(timer > BTN_DEBOUCE) { // software debouncing button
+        if(timer < 500UL) {//unsigned long
+            //single click
+            printStringFromPROGMEM(serial_msg_1); // doesn't work
+        } else {
+            //button hold
+            printStringFromPROGMEM(serial_msg_2);
+        }
+    }
+}
+
+
 
 void initInterrupt0(void) {
     GIMSK |= (1 << INT0); // general interrupt mask register -> enable interrupt on INT0
@@ -142,24 +192,13 @@ void initInterrupt0(void) {
     sei(); //  set interrupt enable bit
 }
 
-//READ
-
-//PC send command RD
-//MCU respond OK
-//PC send EEPROM address from witch start reading and number of bytes
-//MCU respond with readed bytes
-
-//WRITE
-
-//PC send command WR
-//MCU respond OK
-//PC send address number in witch start write and number of bytes
-//MCU writes data and at the end respond WR-OK to computer
 
 int main(void) {
 
 
   // -------- Inits --------- //
+
+  DDRB |= _BV(PB0); 
 
   // button
   DDRD &= ~_BV(PD2);
@@ -176,7 +215,7 @@ int main(void) {
   initInterrupt0();
 
 
-  printString("\r\nWelcome to Fled!\r\n");                          /* to test */
+  printString("\r\nWelcome to Fled!\r\n");
 
 
   EEPROM_clear();
@@ -184,8 +223,10 @@ int main(void) {
 
   // printString("Write to EEPROM.\r\n");
 
-  // EEPROM_writeByte(0,~0b11110000);
-  // EEPROM_writeByte(1,~0b10000000);
+  EEPROM_writeByte(0,~0b11110000);
+  EEPROM_writeByte(1,~0b10000000);
+  EEPROM_writeByte(2,~0b10101010);
+  EEPROM_writeByte(3,~0b00010001);
 
   //EEPROM_writePage(0x0000, data);
 
@@ -194,32 +235,9 @@ int main(void) {
 
   //_delay_ms(3000);
 
-  EEPROM_readIntoLeds(0);
+  //EEPROM_readIntoLeds(0);
 
 
-
-
-  // Shift Register
-  PORTD &= ~_BV(PD5);
-  spiTransfer(~0b11111111);
-  spiTransfer(~0b11111111);
-  PORTD |= _BV(PD5);
-
-  // printString("Read from EEPROM: \r\n");
-  // // for(uint16_t i= 0; i< 512; i++) {
-  // //     printHexByte(i);
-  // //     printString(" > ");
-  // //     ;
-  // //     printString("\r\n");
-  // // }
-
-  // uint8_t *buf = EEPROM_readPage(0x0000);
-  // for(uint8_t i = 0; i < 32; i++) {
-  //   printBinaryByte(buf[i]);
-  //   printString("\r\n");
-  // }
-
-  // printString("\r\n");
 
 
 
