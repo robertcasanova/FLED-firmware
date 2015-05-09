@@ -10,6 +10,7 @@ Takes in a character at a time and sends it right back out,
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
 #include <string.h>
+#include <stdlib.h>
 #include "USART.h"
 #include "SPI.h"
 #include "SPI_EEPROM.h"
@@ -27,6 +28,8 @@ Takes in a character at a time and sends it right back out,
 
 #define READ_FROM_EEPROM 0x0001
 #define WRITE_TO_EEPROM 0x0002
+#define LOAD_DATA_TO_LEDS 0x0003
+#define ERASE_EEPROM 0x0004
 
 #define HEADER_BYTE_1 0xFF
 #define HEADER_BYTE_2 0x55
@@ -38,23 +41,15 @@ Takes in a character at a time and sends it right back out,
 #define BUTTON PD2
 #define LATCH PD5
 
+
+const char p_buffer[5];
+#define P(str) (strcpy_P(p_buffer, PSTR(str)), p_buffer)
+
+
+
 //global variables used inside ISR
 volatile uint8_t hall_debounce;
 volatile uint16_t sensor_timer;
-
-
-//all this part needs refactoring
-
-const char serial_msg_1[] PROGMEM = "single click\r\n";
-const char serial_msg_2[] PROGMEM = "hold down\r\n";
-const char serial_msg_3[] PROGMEM = "Read from EEPROM";
-const char serial_msg_4[] PROGMEM = "Write to EEPROM";
-const char serial_msg_5[] PROGMEM = "CMD";
-const char serial_msg_6[] PROGMEM = "OK";
-const char serial_msg_7[] PROGMEM = "Welcome to Fled!";
-const char serial_br[] PROGMEM = "\r\n";
-
-
 
 
 struct SerialCommand *getSerialPack(void); // metti in header
@@ -70,14 +65,13 @@ struct SerialCommand *getSerialPack() { // format: 2bytes header, 1byte len, 2by
 	//@TODO add checksum
     //uint8_t checksum;
 
-    printHexByte(receiveByte());
   
     if(receiveByte() != HEADER_BYTE_1) {
 
-      return;    
+      return 0;    
     }
     if(receiveByte() != HEADER_BYTE_2) {
-      return;
+      return 0;
     }
 
 
@@ -97,9 +91,6 @@ struct SerialCommand *getSerialPack() { // format: 2bytes header, 1byte len, 2by
     sc -> len = receiveByte();
     sc -> cmd = receiveByte() << 8;
     sc -> cmd |= receiveByte();
-
-    
-
     
     if(sc -> len > 2) { // parameters available
     	*sc->param = NULL;
@@ -119,7 +110,6 @@ struct SerialCommand *getSerialPack() { // format: 2bytes header, 1byte len, 2by
 //receive commans from computer
 ISR(USART_RX_vect) {
 	cli();
-	printStringFromPROGMEM(serial_br);
 
 
 	struct SerialCommand *command = NULL;
@@ -128,59 +118,48 @@ ISR(USART_RX_vect) {
 	
 
 
-	uint8_t eeprom_address;
+	uint16_t eeprom_address;
 	uint8_t len;
 
 	switch(command -> cmd) {
-		case READ_FROM_EEPROM:
+		case LOAD_DATA_TO_LEDS: //0x0003
+			eeprom_address = (command -> param[0]) << 8;
+			eeprom_address |= (command -> param[1]) & 0xFF; 
+			printString(P("K"));
+			EEPROM_readIntoLeds(eeprom_address);
 
-			eeprom_address = (command -> param[0]);
-			len = (command -> param[1]);
+		case READ_FROM_EEPROM: //0x0001
 
-				// printStringFromPROGMEM(serial_br);
-				// printStringFromPROGMEM(serial_msg_3);
-				// printStringFromPROGMEM(serial_br);
-				// printString("Address:");
-				// printHexByte(eeprom_address);
-				// printStringFromPROGMEM(serial_br);
-				// printString("Bytes:");
-				// printHexByte(len);
-				// printStringFromPROGMEM(serial_br);
+
+			eeprom_address = (command -> param[0]) << 8;
+			eeprom_address |= (command -> param[1]) & 0xFF; 
+			len = (command -> param[2]);
 
 			for(uint8_t i = 0; i< len; i++) {
 				uint8_t read = EEPROM_readByte(eeprom_address);
-					printBinaryByte(read);
+				printBinaryByte(read);	
 
-				EEPROM_readIntoLeds(eeprom_address);
 				eeprom_address += 1;
 			}
-			
-
+			printString(P("K"));
 			break; 
-		case WRITE_TO_EEPROM:
+		case WRITE_TO_EEPROM: //0x0002
 
-			#ifdef DEBUG
-				printStringFromPROGMEM(serial_br);
-				printStringFromPROGMEM(serial_msg_4);
-				printStringFromPROGMEM(serial_br);
-				printString("Address:");
-				printHexByte(eeprom_address);
-				printStringFromPROGMEM(serial_br);
-				printString("Data:");
-			#endif
+			eeprom_address = (command -> param[0]) << 8;
+			eeprom_address |= (command -> param[1]) & 0xFF;  //must be 2 byte for address FIX THIS
 
-			eeprom_address = (command -> param[0]);
-
-			for(uint8_t i = 1; i <= (command->len)-3; i++ ) {
-				#ifdef DEBUG
-					printHexByte(command -> param[i]);
-				#endif	
+			for(uint8_t i = 2; i <= (command->len)-1; i++ ) {
+				//printHexByte(command -> param[i]);
 				EEPROM_writeByte(eeprom_address, command -> param[i]);
 				eeprom_address += 1;
 			}
-      #ifdef DEBUG
-			  printStringFromPROGMEM(serial_msg_6); // OK
-      #endif
+			printString(P("K"));
+			break;
+		case ERASE_EEPROM: //0x0004
+			EEPROM_clear();
+
+			//send back OK to serial
+			printString(P("K"));
 
 			break;
 
@@ -203,7 +182,7 @@ ISR(TIMER0_OVF_vect) {
   }
 }
 
-//called every step of the circle, 128 steps per circle
+//called every step of the circle, 120 steps per circle
 ISR(TIMER1_COMPA_vect) {
   //read data into leds
   #ifdef DEBUG
@@ -223,38 +202,43 @@ ISR(INT0_vect) {
     if(timer > BTN_DEBOUCE) { // software debouncing button
         if(timer < 500UL) {//unsigned long
             //single click
-            //@TODO reset the watchdog timer, will reset the device
+            //@TODO reset the watchdog timer, will reset the device 
+
             #ifdef DEBUG
-              printStringFromPROGMEM(serial_msg_1); 
-            #endif
+          	printString(P("Single click\r\n"));
+          	#endif 
+            
         } else {
           sensor_timer = 0xFFFF;
             //button hold
           #ifdef DEBUG
-            printStringFromPROGMEM(serial_msg_2);
-          #endif
+          printString(P("Double click\r\n"));
+          #endif 
         }
     }
 }
 
-//hall sensor interrupt
-//ISR(INT1_vect) {
-static void hallSensorFakeInterrupt(void){
-  if(hall_debounce > HALL_DEBOUNCE_THRESH) { // is passed at least 64ms*4 since last loop
-      TCNT1 = 0; 
-      if((sensor_timer < 0xFF) && (sensor_timer > 0x3)) {
-        OCR1A = (sensor_timer << 8) | TCNT0; // store the count of timer0 since last loop
-        TCNT0 = 0; // reset timer0
-        // get current EEPROM address
-        TCCR1B |= _BV(CS10);// start timer1 without prescaler at 100000hz
-        TIMSK |= _BV(OCIE1A); // reset counter when reaches OCR1A value and trigger interrupt
-      } else {
-        TCCR1B &= ~_BV(CS10);//stop timer
-      }
-      sensor_timer = 0;
 
-  }
-  hall_debounce = 0;
+//hall sensor interrupt
+// {
+ISR(INT1_vect) {
+
+	PORTB ^= _BV(PB0);
+  // if(hall_debounce > HALL_DEBOUNCE_THRESH) { // is passed at least 64ms*4 since last loop
+  //     TCNT1 = 0; 
+  //     if((sensor_timer < 0xFF) && (sensor_timer > 0x3)) {
+  //       OCR1A = (sensor_timer << 8) | TCNT0; // store the count of timer0 since last loop
+  //       TCNT0 = 0; // reset timer0
+  //       // get current EEPROM address
+  //       TCCR1B |= _BV(CS10);// start timer1 without prescaler at 100000hz
+  //       TIMSK |= _BV(OCIE1A); // reset counter when reaches OCR1A value and trigger interrupt
+  //     } else {
+  //       TCCR1B &= ~_BV(CS10);//stop timer
+  //     }
+  //     sensor_timer = 0;
+
+  // }
+  // hall_debounce = 0;
 }
 
 
@@ -310,22 +294,15 @@ int main(void) {
 
   hall_debounce = 0;
   sensor_timer = 0;
-
-  printString("Start");
-  
-  #ifdef DEBUG
-  printStringFromPROGMEM(serial_br);
-  printStringFromPROGMEM(serial_msg_7);
-  printStringFromPROGMEM(serial_br);
-  #endif
+ 
 
   // printString("EEPROM Clear.\r\n");
-  //EEPROM_clear();
 
 
-
-  //EEPROM_writeByte(0,~0b11001100);
-  //EEPROM_writeByte(1,~0b11110000);
+  EEPROM_writeByte(0,~0b10101010);
+  EEPROM_writeByte(1,~0b10101010);
+  _delay_ms(500);
+  EEPROM_readIntoLeds(0);
 
   //EEPROM_writePage(0x0000, data);
 
@@ -333,15 +310,18 @@ int main(void) {
   //printBinaryByte(EEPROM_readByte(0));
 
 
-  //_delay_ms(3000);
+  //_delay_ms(500);
 
   //EEPROM_readIntoLeds(0);
 
   
-
+  DDRB |= _BV(PB0);
   while(1){
-      hallSensorFakeInterrupt();
-      _delay_ms(1000); // 1400rpm motor = 43ms x loop
+  		// _delay_ms(1000);
+  		// PORTB |=  _BV(PB0);
+    //   //hallSensorFakeInterrupt();
+    //   _delay_ms(1000); // 1400rpm motor = 43ms x loop
+    //   	PORTB &= ~_BV(PB0);
   };
                                                   /* End event loop */
   return (0);
